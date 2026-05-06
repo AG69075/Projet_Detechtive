@@ -39,13 +39,46 @@ Le réseau est cloisonné en **6 zones de sécurité** indépendantes, chacune a
 
 ### 🔒 Principes de segmentation & règles pfSense
 
-- **DMZ (VLAN 10) → VLANs internes (20/30/40/50/60) :** BLOCK par défaut. **Exceptions :** Serveur Web (`192.168.10.10`) → MariaDB VLAN 20 sur port `3306/TCP`, et → File Server VLAN 20 sur port `445/TCP` (SMB).
-- **VLAN 40 (AD) :** Totalement isolé de la DMZ. Accessible depuis les VLANs 20, 30 et 50 sur les ports LDAP (`389`), LDAPS (`636`) et DNS (`53`) autorisés.
-- **VLAN 50 (Wazuh) :** Collecte les logs de tous les VLANs en lecture seule (ports `1514/1515`). Aucun flux entrant depuis la DMZ n'est autorisé vers ce VLAN.
-- **VLAN 60 (Backup) :** Zone passive — reçoit les sauvegardes depuis VLAN 20 (Serveurs) et VLAN 40 (AD) sur port `9102/TCP` uniquement. **Aucun flux sortant autorisé** (sauf logs vers Wazuh). Accès Internet bloqué (protection anti-ransomware).
-- **LAN internes → Internet :** ALLOW sortant, logs activés et envoyés vers Wazuh (VLAN 50).
-- **WAN entrant :** Seuls les ports `80/443` (NAT vers `192.168.10.10`) et `51820/UDP` (VPN WireGuard — tunnels admin & développeurs) sont ouverts. Tout le reste est BLOCK/DROP avec log vers Wazuh.
-- Le poste **Kali Linux** est positionné avant pfSense (zone WAN) pour simuler un attaquant externe réaliste sans accès au réseau interne.
+**Interface WAN**
+- `51820/UDP` : VPN WireGuard — tunnel Administrateurs
+- `51821/UDP` : VPN WireGuard — tunnel Développeurs
+- `80/443/TCP` : NAT vers le Serveur Web DMZ (`192.168.10.10`)
+- Tout le reste : **BLOCK/DROP** avec log vers Wazuh
+
+**Interface DMZ (VLAN 10)**
+- `192.168.10.10` → MariaDB (`192.168.10.21`) : `3306/TCP` ✅
+- `192.168.10.10` → File Server (`192.168.10.20`) : `445/TCP` ✅
+- DMZ → Internet : ALLOW sortant (mises à jour)
+- DMZ → VLAN 40 (AD), VLAN 50 (MGMT), VLAN 60 (Backup) : **BLOCK**
+
+**Interface SERVERS (VLAN 20)**
+- SERVERS → Wazuh (`192.168.10.42`) : `1514/1515/TCP` (logs)
+- SERVERS → NAS Backup (`192.168.10.50`) : `9102/TCP` (sauvegarde unidirectionnelle)
+- SERVERS → DMZ : **BLOCK** (pas de retour)
+- SERVERS → Internet : ALLOW sortant (mises à jour)
+
+**Interface WORKSTATIONS (VLAN 30)**
+- WORKSTATIONS → SRV-AD01 : `389/636/TCP` (LDAP/LDAPS), `53/TCP+UDP` (DNS)
+- WORKSTATIONS → File Server (`192.168.10.20`) : `445/TCP` (SMB)
+- WORKSTATIONS → Internet : ALLOW sortant
+- WORKSTATIONS → VLAN 50 (MGMT), VLAN 60 (Backup), DMZ : **BLOCK**
+
+**Interface AD (VLAN 40)**
+- AD → Wazuh (`192.168.10.42`) : `1514/1515/TCP` (agents Wazuh)
+- AD → NAS Backup (`192.168.10.50`) : `9102/TCP` (sauvegarde unidirectionnelle)
+- AD → Internet : ALLOW sortant (MAJ Windows, CRL PKI)
+- AD → DMZ : **BLOCK** (isolation totale)
+
+**Interface MGMT (VLAN 50)**
+- MGMT → Internet : ALLOW sortant (mises à jour Wazuh)
+- Admin réseau (`192.168.10.43`) : accès complet pour administration
+
+**Interface BACKUP (VLAN 60)**
+- BACKUP → Wazuh (`192.168.10.42`) : `1514/1515/TCP` (seule exception sortante)
+- BACKUP → Tous les autres VLANs : **BLOCK**
+- BACKUP → Internet : **BLOCK** (protection anti-ransomware)
+
+> ⚠️ pfSense applique un principe **first-match wins** : les règles PASS spécifiques sont positionnées avant les règles BLOCK génériques.
 
 ### 📸 Vue Logique (GNS3)
 
@@ -63,8 +96,8 @@ Le réseau est cloisonné en **6 zones de sécurité** indépendantes, chacune a
 
 * **Hyperviseur / Émulateur :** GNS3 (gestion de la topologie), VMware Workstation.
 * **Switch L2 :** IOU (mode L2 pur — `no ip routing`) — **6 VLANs (10, 20, 30, 40, 50, 60)**, trunk dot1q vers pfSense sur `ethernet 0/0`. Ports inutilisés affectés au VLAN 999 et `shutdown`.
-* **Routage inter-VLAN & Sécurité Périmétrique :** pfSense en **Router-on-a-Stick** — **6 sous-interfaces VLAN**, Firewalling granulaire, NAT, VPN WireGuard (port `51820/UDP`), Syslog vers Wazuh (`192.168.10.41:514`).
-* **Sauvegarde & Restauration :** NAS/Serveur Backup (`192.168.10.50`) — VLAN 60 totalement isolé, sauvegardes unidirectionnelles depuis SERVERS et AD.
+* **Routage inter-VLAN & Sécurité Périmétrique :** pfSense en **Router-on-a-Stick** — **6 sous-interfaces VLAN**, Firewalling granulaire, NAT, VPN WireGuard (ports `51820/UDP` et `51821/UDP`), Syslog vers Wazuh (`192.168.10.42:514`).
+* **Sauvegarde & Restauration :** NAS/Serveur Backup (`192.168.10.50`) — VLAN 60 totalement isolé, sauvegardes unidirectionnelles depuis SERVERS et AD sur port `9102/TCP`.
 * **Supervision de Sécurité :** Wazuh (SIEM & XDR) — collecte d'alertes sur l'ensemble des VLANs depuis le VLAN 50 dédié.
 
 ### ⚙️ Systèmes & Services (Full Windows)
@@ -81,7 +114,7 @@ Toute l'infrastructure serveur repose sur **Windows Server 2022** pour assurer u
   * OS : Windows Server 2022
   * SGBD : MariaDB (MySQL)
 * **NAS/Serveur Backup — VLAN 60 — `192.168.10.50` :**
-  * Zone passive dédiée aux sauvegardes (BorgBackup ou équivalent)
+  * Zone passive dédiée aux sauvegardes
   * Aucun accès Internet, aucun flux initié vers les autres VLANs
 
 ### 💻 Application Intranet ("Detechtive Dashboard")
@@ -119,14 +152,19 @@ Ce projet met en œuvre une défense en profondeur, du réseau à la couche appl
   * *Détail technique :* Utilisation de `PDO::MYSQL_ATTR_SSL_CA` pointant vers le certificat CA (`ca-cert.pem`) pour prévenir les attaques Man-in-the-Middle.
 * **Vérification Active :** Le dashboard affiche en temps réel le statut du chiffrement SQL (`Ssl_cipher`).
 
-### 4. VPN WireGuard (Deux tunnels distincts)
+### 4. VPN WireGuard (Deux tunnels distincts sur deux ports)
 
-* **Protocole :** UDP, Port `51820` sur l'interface WAN de pfSense.
-* **Plage VPN :** `10.10.10.0/24` (réseau virtuel WireGuard) — IP tunnel pfSense : `10.10.10.1`.
-* **Tunnel Administrateurs :** Accès aux VLAN 40 (AD), VLAN 50 (Management) et VLAN 60 (Backup). Réservé aux administrateurs système pour gérer pfSense, l'AD, Wazuh et les sauvegardes sans exposer RDP/SSH.
-* **Tunnel Développeurs :** Accès aux VLAN 10 (DMZ — serveur web) et VLAN 20 (Serveurs internes — MariaDB, File Server). Permet les déploiements et la maintenance applicative sans droits d'administration infrastructure.
-* **Règle commune :** Le VLAN 30 (postes clients) est inaccessible depuis les deux tunnels.
-* **Justification :** Séparation des profils d'accès selon le principe du moindre privilège — les développeurs n'accèdent pas aux zones d'administration, et les administrateurs n'ont pas accès aux ressources applicatives en dehors de leur périmètre.
+Deux tunnels WireGuard distincts sont configurés sur pfSense, séparant les profils d'accès selon le principe du moindre privilège.
+
+| | Tunnel Administrateurs | Tunnel Développeurs |
+| :--- | :--- | :--- |
+| **Port WAN** | `51820/UDP` | `51821/UDP` |
+| **Plage VPN** | `10.10.10.0/24` | `10.10.20.0/24` |
+| **IP pfSense tunnel** | `10.10.10.1` | `10.10.20.1` |
+| **Accès autorisés** | VLAN 40 (AD), VLAN 50 (MGMT), NAS Backup (`22/9102`) | VLAN 10 (DMZ — `443/22`), VLAN 20 (Servers), VLAN 30 (Workstations), VLAN 40 (DNS `53` uniquement) |
+| **Accès interdits** | VLAN 10 (DMZ), VLAN 30 (Clients) | VLAN 50 (MGMT/SIEM), GUI pfSense |
+
+**Justification :** les développeurs n'accèdent pas aux zones d'administration (SIEM, pfSense GUI) ; les administrateurs n'ont pas accès à la DMZ ni aux postes clients en dehors de leur périmètre.
 
 ### 5. Gestion des Identités & Interopérabilité
 
@@ -157,22 +195,37 @@ Pour reproduire cet environnement sous GNS3 :
    - Créer **6 sous-interfaces VLAN** sur l'interface connectée à l'IOU :
      - VLAN 10 → `192.168.10.1`, VLAN 20 → `192.168.10.17`, VLAN 30 → `192.168.10.129`
      - VLAN 40 → `192.168.10.33`, VLAN 50 → `192.168.10.41`, VLAN 60 → `192.168.10.49`
-   - VPN WireGuard : UDP `51820`, tunnel `10.10.10.0/24`.
+   - VPN WireGuard Admins : UDP `51820`, tunnel `10.10.10.0/24`, IP pfSense `10.10.10.1`.
+   - VPN WireGuard Devs : UDP `51821`, tunnel `10.10.20.0/24`, IP pfSense `10.10.20.1`.
    - Syslog : remote log server `192.168.10.42:514`, source `192.168.10.41`.
 4. Déployer les règles de pare-feu pfSense par interface VLAN :
-   - WAN → NAT HTTP/HTTPS vers `192.168.10.10` (Serveur Web DMZ).
-   - DMZ → VLAN 20 : ports `3306/TCP` (MariaDB) et `445/TCP` (File Server SMB) uniquement.
-   - DMZ → VLAN 40/50/**60** : **BLOCK**.
-   - VLAN 30 → VLAN 40 : LDAP `389`, LDAPS `636`, DNS `53` uniquement.
-   - VLAN 30 → VLAN 60 : **BLOCK**.
-   - VLAN 20 et VLAN 40 → VLAN 60 : port `9102/TCP` uniquement (backup unidirectionnel).
-   - VLAN 60 → Tous VLANs : **BLOCK** (sauf logs Wazuh `1514/1515`).
-   - VLAN 60 → Internet : **BLOCK** (anti-ransomware).
-   - Tous VLANs → Wazuh `192.168.10.42` : ports `1514/1515` (logs, lecture seule).
-   - LAN internes → Internet : ALLOW sortant avec logs.
+   - **WAN** → NAT HTTP/HTTPS vers `192.168.10.10` ; UDP `51820` et `51821` pour les deux tunnels WireGuard ; tout le reste BLOCK.
+   - **DMZ** → VLAN 20 : ports `3306/TCP` (MariaDB) et `445/TCP` (File Server SMB) uniquement depuis `192.168.10.10`.
+   - **DMZ** → VLAN 40/50/60 : **BLOCK**.
+   - **SERVERS** → Wazuh : `1514/1515/TCP` ; NAS Backup : `9102/TCP` ; DMZ : **BLOCK**.
+   - **WORKSTATIONS** → VLAN 40 : LDAP `389`, LDAPS `636`, DNS `53` ; File Server : `445/TCP` ; VLAN 50/60 : **BLOCK**.
+   - **AD** → Wazuh : `1514/1515/TCP` ; NAS Backup : `9102/TCP` ; DMZ : **BLOCK**.
+   - **BACKUP** → Wazuh : `1514/1515/TCP` uniquement ; tout le reste (Internet inclus) : **BLOCK**.
+   - **WireGuard Admins** → VLAN 40/50 : Any ; NAS Backup `192.168.10.50` : `22/9102/TCP` ; VLAN 30 : **BLOCK**.
+   - **WireGuard Devs** → VLAN 10 : `443/22/TCP` ; VLAN 20/30 : Any ; VLAN 40 : DNS `53` uniquement ; VLAN 50 et GUI pfSense : **BLOCK**.
 5. Initialiser l'Active Directory et joindre les serveurs Web, BDD et FS au domaine `detechtive.local`.
 6. Configurer les agents Wazuh sur chaque serveur pour remonter les alertes vers `192.168.10.42` (VLAN 50).
-7. Déployer et configurer le NAS/Serveur Backup (`192.168.10.50`) — configurer les jobs de sauvegarde depuis SERVERS (VLAN 20) et AD (VLAN 40).
+7. Déployer et configurer le NAS/Serveur Backup (`192.168.10.50`) — configurer les jobs de sauvegarde depuis SERVERS (VLAN 20) et AD (VLAN 40) sur port `9102/TCP`.
+
+---
+
+## 📈 Évolutivité & Haute Disponibilité
+
+### Haute Disponibilité (CARP)
+- **Deux pfSense en CARP** : IP virtuelle flottante par VLAN, synchronisation automatique des états et de la configuration, bascule transparente en cas de panne.
+- **Deux IOU en agrégation LACP** : redondance L2 et gain de bande passante vers pfSense.
+
+### Segmentation Avancée
+- **IDS/IPS** : déploiement de Suricata ou Snort sur l'interface WAN et les interfaces VLAN critiques.
+- **Filtrage URL** : pfBlockerNG pour les postes clients (VLAN 30).
+
+### MFA sur l'accès VPN (FreeRADIUS + TOTP)
+L'accès WireGuard repose actuellement sur l'authentification par clés asymétriques. En perspective d'évolution, un second facteur **TOTP (RFC 6238)** via **FreeRADIUS** installé directement sur pfSense permettrait d'atteindre le niveau **AAL2** (NIST SP 800-63B), conformément aux recommandations ANSSI sur la gestion des accès privilégiés distants. Même en cas de compromission d'une clé privée WireGuard, un attaquant ne pourrait pas établir de tunnel sans le code TOTP valide (fenêtre de 30 secondes).
 
 ---
 
