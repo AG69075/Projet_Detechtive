@@ -29,7 +29,7 @@ Le réseau est cloisonné en **6 zones de sécurité** indépendantes, chacune a
 
 | Zone | VLAN | CIDR | Passerelle (pfSense) | Plage IP | Services Hébergés | Niveau de confiance |
 | :--- | :---: | :--- | :--- | :--- | :--- | :---: |
-| **DMZ** | `10` | `192.168.10.0/28` | `192.168.10.1` | `.2 → .14` | Serveur Web Apache/PHP (`192.168.10.10`), Webterm (`192.168.10.11`) | 🔴 Faible |
+| **DMZ** | `10` | `192.168.10.0/28` | `192.168.10.1` | `.2 → .14` | Serveur Web Apache/PHP (`192.168.10.10`) | 🔴 Faible |
 | **Serveurs Internes** | `20` | `192.168.10.16/28` | `192.168.10.17` | `.18 → .30` | File Server (`192.168.10.20`), Base de Données MariaDB (`192.168.10.21`) | 🟠 Moyen |
 | **Postes Clients** | `30` | `192.168.10.128/25` | `192.168.10.129` | `.130 → .254` | Workstations des agents Windows (DHCP `.130→.200` géré par pfSense) | 🟡 Standard |
 | **Active Directory** | `40` | `192.168.10.32/29` | `192.168.10.33` | `.34 → .38` | Contrôleur de Domaine SRV-AD-01 / DNS (`192.168.10.34`) | 🔴 Critique |
